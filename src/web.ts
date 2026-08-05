@@ -672,12 +672,13 @@ export function renderPlayerPage(passwordProtected: boolean): string {
   });
   $("plName").addEventListener("keydown", (e) => { if (e.key === "Enter") $("plCreate").click(); });
 
-  function playPlaylist(id, name) {
+  function playPlaylist(pl) {
+    const id = pl.id, name = pl.name;
     fetch("/api/playlist?id=" + id, { headers: authHeaders() }).then(r => {
       if (r.status === 401) { showAuth(); throw new Error("auth"); }
       return r.json();
-    }).then(pl => {
-      songs = pl || [];
+    }).then(plSongs => {
+      songs = Array.isArray(plSongs) ? plSongs : [];
       activePlaylist = { id, name };
       current = -1;
       searchEl.value = "";
