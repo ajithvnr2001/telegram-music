@@ -1,0 +1,40 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tele-music-player",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-01-31",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "CHANNEL_ID": "-1004303738393",
+    "ADMIN_IDS": "1720179071",
+    "BOT_USERNAME": "musicvnrbot"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "music-db",
+      "database_id": "dbb56244-bd4d-4d67-bf20-44fc2469c644",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CHANNEL_SCANNER",
+        "class_name": "ChannelScanner"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ChannelScanner"]
+    }
+  ],
+  "triggers": {
+    "crons": ["0 */6 * * *"]
+  }
+}

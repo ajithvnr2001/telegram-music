@@ -1,0 +1,21 @@
+{
+  "name": "cloudflare-tele-music",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "db:migrate": "wrangler d1 migrations apply music-db"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260730.1",
+    "typescript": "^5.7.3",
+    "wrangler": "^4.68.1"
+  },
+  "dependencies": {
+    "@mtproto/core": "^6.3.0",
+    "@yaebal/file-id": "^0.0.1"
+  }
+}
