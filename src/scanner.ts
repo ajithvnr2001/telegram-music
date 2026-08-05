@@ -1,5 +1,5 @@
 import MTProto from "@mtproto/core/envs/browser";
-import { serializeFileId, type FileType } from "@yaebal/file-id";
+import { parseFileId, serializeFileId, type FileType } from "@yaebal/file-id";
 import type { Env, Song } from "./types";
 import { insertSong } from "./db";
 
@@ -78,9 +78,87 @@ function stateRes(env: Env) {
   };
 }
 
+export function scannerState(env: Env) {
+  return stateRes(env);
+}
+
+export async function mtpGetChunk(
+  env: Env,
+  location: Record<string, unknown>,
+  offset: number,
+  limit: number,
+  _dcId?: number,
+): Promise<{ _: string; bytes?: Uint8Array; type?: unknown; mtime?: number }> {
+  await ensureLoggedIn(env);
+  const res = await rpc(env, "upload.getFile", { location, offset, limit });
+  return res as { _: string; bytes?: Uint8Array; type?: unknown; mtime?: number };
+}
+
+export function mtDocLocation(
+  fileId: string,
+): { location: Record<string, unknown>; dcId: number } | null {
+  try {
+    const p = parseFileId(fileId);
+    if (!p || p.kind !== "document") return null;
+    return {
+      location: {
+        _: "inputDocumentFileLocation",
+        id: p.id,
+        access_hash: p.accessHash,
+        file_reference: p.fileReference ?? new Uint8Array(0),
+        thumb_size: "",
+      },
+      dcId: p.dcId,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch the current document from a channel message over MTProto. Channel
+ * posts periodically rotate `file_reference`, so a stored file_id goes stale;
+ * this returns a fresh `inputDocumentFileLocation` (id, access_hash, current
+ * file_reference, dc) for the given message.
+ */
+export async function mtpFreshDocument(
+  env: Env,
+  messageId: number,
+): Promise<{ location: Record<string, unknown>; dcId: number; size: number } | null> {
+  try {
+    const peer = await getChannelPeer(env);
+    const channel = {
+      _: "inputChannel",
+      channel_id: peer.channel_id,
+      access_hash: peer.access_hash,
+    };
+    const res = await rpc(env, "channels.getMessages", {
+      channel,
+      id: [{ _: "inputMessageID", id: messageId }],
+    });
+    const msgs: TLMessage[] = (res?.messages ?? []).filter((m: any) => m && m._ === "message");
+    const doc = msgs[0]?.media?.document;
+    if (!doc || doc._ !== "document") return null;
+    return {
+      location: {
+        _: "inputDocumentFileLocation",
+        id: doc.id,
+        access_hash: doc.access_hash,
+        file_reference: doc.file_reference,
+        thumb_size: "",
+      },
+      dcId: doc.dc_id,
+      size: doc.size ? Number(doc.size) : 0,
+    };
+  } catch (e: any) {
+    console.error("mtpFreshDocument failed", messageId, e?.error_message ?? e?.message ?? String(e));
+    return null;
+  }
+}
+
 let mtproto: InstanceType<typeof MTProto> | null = null;
 
-function resetMTProto(): void {
+export function resetMTProto(): void {
   mtproto = null;
 }
 
@@ -107,7 +185,7 @@ async function rpc(env: Env, method: string, params: Record<string, unknown>, re
     try {
       return await withTimeout(m.call(method, params), 45000, `${method} timed out`);
     } catch (err: any) {
-      const msg = err?.message ?? "";
+      const msg = err?.error_message ?? err?.message ?? String(err);
       if (msg.includes("timed out")) {
         resetMTProto();
                 continue;

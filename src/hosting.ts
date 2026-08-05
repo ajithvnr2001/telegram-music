@@ -3,7 +3,7 @@ import { Telegram, type TgMessage } from "./telegram";
 import { insertSong } from "./db";
 import { splitArtistTitle } from "./upload";
 
-const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const PLAYABLE = [
   "audio/mpeg", "audio/mp4", "audio/ogg", "audio/opus", "audio/flac", "audio/wav",
   "audio/aac", "audio/x-m4a", "audio/webm",
@@ -89,7 +89,7 @@ export async function handleWebUpload(request: Request, env: Env): Promise<Respo
 
   if (size === 0) return json({ error: "Empty file" }, 400);
   if (size > MAX_UPLOAD_BYTES) {
-    return json({ error: "File too large — max 20 MB via web (send bigger files to the bot on Telegram)" }, 413);
+    return json({ error: "File too large — max 50 MB via web (send bigger files to the bot on Telegram)" }, 413);
   }
   if (!isPlayable(mime, name)) {
     return json({ error: `Unsupported format: ${mime || extOf(name)}` }, 415);

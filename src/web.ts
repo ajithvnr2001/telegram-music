@@ -173,7 +173,7 @@ export function renderPlayerPage(passwordProtected: boolean): string {
 <div id="uploadOverlay">
   <div class="upload-card">
     <h2>＋ Add songs</h2>
-    <div class="hint">Up to 20 MB per file — they are stored in the Telegram channel and stream from here.</div>
+    <div class="hint">Up to 50 MB per file — they are stored in the Telegram channel and stream from here.</div>
     <div class="drop" id="dropZone">
       <div class="big">📥</div>
       <div>Drag &amp; drop audio or video files here<br>or <b>click to browse</b></div>
