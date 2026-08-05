@@ -235,6 +235,7 @@ export function renderPlayerPage(passwordProtected: boolean): string {
   let waStart = 0;
   let waActive = false;
   let waTimer = null;
+  let userSeeking = false;
 
   function ensureAudio() {
     if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
@@ -280,11 +281,12 @@ export function renderPlayerPage(passwordProtected: boolean): string {
     const act = actx;
     if (waSrc) { try { waSrc.stop(); } catch {} try { waSrc.disconnect(); } catch {} waSrc = null; }
     waOffset = Math.max(0, Math.min(waBuffer.duration, t));
+    if (waOffset >= waBuffer.duration - 0.3) waOffset = Math.max(0, waBuffer.duration - 0.3);
     waStart = act.currentTime;
     waSrc = act.createBufferSource();
     waSrc.buffer = waBuffer;
     waSrc.connect(act.destination);
-    waSrc.onended = () => { if (waActive) next(true); };
+    waSrc.onended = () => { if (waActive && !userSeeking) next(true); };
     waSrc.start(0, waOffset);
     if (!playing) act.suspend();
     updateWATime();
@@ -366,6 +368,15 @@ export function renderPlayerPage(passwordProtected: boolean): string {
     render();
     $("npTitle").textContent = displayName(s);
     $("npSub").textContent = (s.file_name || "") + " · " + fmtSize(s.size);
+    bar.value = 0;
+    $("tCur").textContent = "0:00";
+    if (s.duration && isFinite(s.duration) && s.duration > 0) {
+      $("tDur").textContent = fmtTime(s.duration);
+      bar.max = Math.round(s.duration * 1000);
+    } else {
+      $("tDur").textContent = "0:00";
+      bar.max = 1000;
+    }
     const isVideo = typeOf(s) === "video";
     const el = isVideo ? video : audio;
     if (isVideo) { videoWrap.classList.add("show"); audio.pause(); }
@@ -488,11 +499,20 @@ export function renderPlayerPage(passwordProtected: boolean): string {
 
   bar.addEventListener("input", () => {
     if (waActive) { waSeek(bar.value / 1000); return; }
+    userSeeking = true;
     const el = typeOf(filtered[current]) === "video" ? video : audio;
-    el.currentTime = bar.value / 1000;
+    const target = bar.value / 1000;
+    if (isFinite(el.duration) && el.duration > 0 && target >= el.duration - 0.3) {
+      el.currentTime = Math.max(0, el.duration - 0.3);
+    } else {
+      el.currentTime = target;
+    }
   });
-  audio.addEventListener("ended", () => next(true));
-  video.addEventListener("ended", () => next(true));
+  bar.addEventListener("change", () => {
+    setTimeout(() => { userSeeking = false; }, 600);
+  });
+  audio.addEventListener("ended", () => { if (!userSeeking) next(true); });
+  video.addEventListener("ended", () => { if (!userSeeking) next(true); });
 
   function loadSongs() {
     fetch("/api/songs", { headers: authHeaders() }).then(r => {
