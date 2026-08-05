@@ -408,17 +408,32 @@ export function renderPlayerPage(passwordProtected: boolean): string {
   function ensureFFmpeg() {
     if (!ffmpegPromise) {
       ffmpegPromise = new Promise((resolve, reject) => {
-        const scr = document.createElement("script");
-        scr.src = "https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js";
-        scr.onload = () => {
+        const loadScript = (src) => new Promise((res, rej) => {
+          const scr = document.createElement("script");
+          scr.src = src;
+          scr.onload = res;
+          scr.onerror = () => rej(new Error("failed to load " + src));
+          document.head.appendChild(scr);
+        });
+        const coreBase = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
+        Promise.all([
+          loadScript("https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"),
+          loadScript("https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js"),
+        ]).then(async () => {
           try {
-            const { createFFmpeg } = window.FFmpeg;
-            const ffmpeg = createFFmpeg({ log: false });
-            ffmpeg.load().then(() => resolve(ffmpeg), reject);
+            const { FFmpeg } = window.FFmpegWASM;
+            const { toBlobURL } = window.FFmpegUtil;
+            const ffmpeg = new FFmpeg();
+            ffmpeg.setLogger(({ type, message }) => {
+              if (type === "error") console.error("[ffmpeg]", message);
+            });
+            await ffmpeg.load({
+              coreURL: await toBlobURL(coreBase + "/ffmpeg-core.js", "text/javascript"),
+              wasmURL: await toBlobURL(coreBase + "/ffmpeg-core.wasm", "application/wasm"),
+            });
+            resolve(ffmpeg);
           } catch (e) { reject(e); }
-        };
-        scr.onerror = () => reject(new Error("ffmpeg failed to load"));
-        document.head.appendChild(scr);
+        }, reject);
       });
     }
     return ffmpegPromise;
@@ -435,11 +450,16 @@ export function renderPlayerPage(passwordProtected: boolean): string {
     const resp = await fetch(streamUrl(s.id));
     if (!resp.ok) throw new Error("stream failed");
     const buf = await resp.arrayBuffer();
-    ffmpeg.FS("writeFile", "in.m4a", new Uint8Array(buf));
-    await ffmpeg.run("-i", "in.m4a", "-vn", "-c:a", "flac", "out.flac");
-    const out = ffmpeg.FS("readFile", "out.flac");
-    ffmpeg.FS("unlink", "in.m4a");
-    ffmpeg.FS("unlink", "out.flac");
+    ffmpeg.writeFile("in.m4a", new Uint8Array(buf));
+    await ffmpeg.exec(["-i", "in.m4a", "-vn", "-c:a", "flac", "out.flac"]);
+    let out;
+    try {
+      out = await ffmpeg.readFile("out.flac");
+    } catch (e) {
+      throw new Error("conversion failed (out.flac missing)");
+    }
+    ffmpeg.deleteFile("in.m4a");
+    ffmpeg.deleteFile("out.flac");
     const entry = { buf: out.slice().buffer, decoded: null };
     entry.decoded = ensureAudio().decodeAudioData(entry.buf.slice(0))
       .catch(() => { throw new Error("decode failed"); });
