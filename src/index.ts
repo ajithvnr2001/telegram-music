@@ -6,7 +6,7 @@ import { handleStream } from "./stream";
 import { extractMedia, fmtSize, indexFile, setWorkerUrl } from "./upload";
 import { handleFileServe, handleWebUpload } from "./hosting";
 import { renderPlayerPage } from "./web";
-import { handleAuth, runScan, scannerStatus } from "./scanner";
+import { handleAuth, runScan, scannerStatus, scannerState } from "./scanner";
 import { handleFfmpegAsset, setWaitUntil } from "./ffmpeg-assets";
 
 export { ChannelScanner } from "./scanner";
@@ -395,6 +395,9 @@ export default {
 
     if (path === "/scanner/scan" && request.method === "POST") {
       try {
+        if (url.searchParams.get("full") === "1") {
+          await scannerState(env).set("last_message_id", "0");
+        }
         const r = await runScan(env);
         return json({ ok: true, scanned: r.scanned, indexed: r.indexed, done: r.done });
       } catch (e: any) {
