@@ -7,23 +7,20 @@ file, extracts rich metadata (title, artist, album, duration, codec, sample
 rate, channels, bitrate, language), and stores everything as RAW JSON
 (songs.json) for later processing / bulk upload to Cloudflare D1.
 
+Single command — auto-detects the newest message, auto-resumes, auto-exports:
+  python scan_songs.py
+
 Crash-proof & resumable:
   - Every song is written to songs.json immediately after processing.
+  - Each song is logged to scan.log as it is processed.
   - On restart, already-processed message_ids are skipped (no re-download).
   - A single bad file never aborts the run.
-
-Usage:
-  python scan_songs.py --start 492 --end 2878
-  python scan_songs.py --resume            # continue from last checkpoint
-  python scan_songs.py --export            # dump done songs to songs_export.json
+  - At the end, done songs are exported to songs_export.json for D1.
 """
 
-import argparse
 import asyncio
 import json
 import os
-import re
-import sys
 import time
 
 from telethon import TelegramClient
@@ -45,6 +42,7 @@ PHONE = "+916381445515"
 
 CHANNEL_ID = -1004303738393
 JSON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "songs.json")
+LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scan.log")
 SESSION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "telethon_session")
 
 BATCH_SIZE = 50          # messages fetched per MTProto call
@@ -130,6 +128,17 @@ def upsert_song(songs, song):
 def get_checkpoint(songs):
     ids = [s.get("message_id") for s in songs if s.get("message_id") is not None]
     return max(ids) if ids else None
+
+
+def log_line(msg):
+    """Append a timestamped line to scan.log and print it."""
+    line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+    print(line)
+    try:
+        with open(LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +310,7 @@ def extract_metadata(file_path, mime):
 # ---------------------------------------------------------------------------
 async def scan_range(client, songs, start_id, end_id):
     channel = await client.get_entity(CHANNEL_ID)
-    print(f"Channel: {channel.title}")
+    log_line(f"Channel: {channel.title}")
 
     total = 0
     skipped = 0
@@ -324,12 +333,12 @@ async def scan_range(client, songs, start_id, end_id):
                     upsert_song(songs, song)
                     save_songs(songs)  # checkpoint after every song (crash-proof)
                     total += 1
-                    print(f"  [{msg.id}] {song['file_name']} | lang={song['language']} | {song['media_type']}")
+                    log_line(f"[{msg.id}] OK {song['file_name']} | lang={song['language']} | {song['media_type']}")
                 else:
                     skipped += 1
             except Exception as e:
                 errors += 1
-                print(f"  [{msg.id}] ERROR: {e}")
+                log_line(f"[{msg.id}] ERROR {e}")
                 # mark as done so we don't retry forever on a corrupt file
                 upsert_song(songs, {
                     "message_id": msg.id, "tg_file_id": None, "chat_id": str(CHANNEL_ID),
@@ -344,9 +353,9 @@ async def scan_range(client, songs, start_id, end_id):
             await asyncio.sleep(SLEEP_BETWEEN_MSGS)
 
         last_id = msgs[-1].id - 1
-        print(f"  ... checkpoint at message {last_id} (total {total}, skipped {skipped}, errors {errors})")
+        log_line(f"  ... checkpoint at message {last_id} (total {total}, skipped {skipped}, errors {errors})")
 
-    print(f"\nDONE. Indexed {total}, skipped {skipped}, errors {errors}.")
+    log_line(f"DONE. Indexed {total}, skipped {skipped}, errors {errors}.")
     return total
 
 
@@ -401,41 +410,47 @@ async def process_message(client, msg: Message):
     if media_kind == "audio" and doc.size and doc.size < 60 * 1024 * 1024:
         tmp_base = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"_tmp_{msg.id}")
         downloaded_path = None
-        for attempt in range(1, DOWNLOAD_RETRIES + 1):
-            try:
-                path = await asyncio.wait_for(
-                    client.download_media(msg, file=tmp_base),
-                    timeout=DOWNLOAD_TIMEOUT,
-                )
-                # download_media returns the actual path (with extension)
-                if path and os.path.exists(path) and os.path.getsize(path) > 0:
-                    downloaded_path = path
-                    break
-                print(f"    (download produced empty file for {msg.id}, retrying)")
-            except Exception as e:
-                print(f"    (download attempt {attempt}/{DOWNLOAD_RETRIES} failed for {msg.id}: {e})")
-            finally:
-                await asyncio.sleep(2 * attempt)
-        if downloaded_path:
-            try:
-                meta = extract_metadata(downloaded_path, doc.mime_type)
-                for k, v in meta.items():
-                    if v is not None:
-                        song[k] = v
-                # fall back to Telegram-provided title/artist if tags are empty
-                if not song["title"] and title:
-                    song["title"] = title
-                if not song["artist"] and artist:
-                    song["artist"] = artist
-                if not song["duration"] and duration:
-                    song["duration"] = duration
-            except Exception as e:
-                print(f"    (metadata skip for {msg.id}: {e})")
-            finally:
-                if os.path.exists(downloaded_path):
-                    os.remove(downloaded_path)
-        else:
-            print(f"    (download failed for {msg.id} after {DOWNLOAD_RETRIES} attempts; saving without metadata)")
+        try:
+            for attempt in range(1, DOWNLOAD_RETRIES + 1):
+                try:
+                    path = await asyncio.wait_for(
+                        client.download_media(msg, file=tmp_base),
+                        timeout=DOWNLOAD_TIMEOUT,
+                    )
+                    # download_media returns the actual path (with extension)
+                    if path and os.path.exists(path) and os.path.getsize(path) > 0:
+                        downloaded_path = path
+                        break
+                    print(f"    (download produced empty file for {msg.id}, retrying)")
+                except Exception as e:
+                    print(f"    (download attempt {attempt}/{DOWNLOAD_RETRIES} failed for {msg.id}: {e})")
+                finally:
+                    await asyncio.sleep(2 * attempt)
+            if downloaded_path:
+                try:
+                    meta = extract_metadata(downloaded_path, doc.mime_type)
+                    for k, v in meta.items():
+                        if v is not None:
+                            song[k] = v
+                    # fall back to Telegram-provided title/artist if tags are empty
+                    if not song["title"] and title:
+                        song["title"] = title
+                    if not song["artist"] and artist:
+                        song["artist"] = artist
+                    if not song["duration"] and duration:
+                        song["duration"] = duration
+                except Exception as e:
+                    print(f"    (metadata skip for {msg.id}: {e})")
+            else:
+                print(f"    (download failed for {msg.id} after {DOWNLOAD_RETRIES} attempts; saving without metadata)")
+        finally:
+            # ALWAYS delete the downloaded temp file(s) before moving to the next song
+            for f in os.listdir(os.path.dirname(tmp_base)):
+                if f.startswith(f"_tmp_{msg.id}"):
+                    try:
+                        os.remove(os.path.join(os.path.dirname(tmp_base), f))
+                    except Exception:
+                        pass
 
     # language: metadata first, then filename hints, then genre
     song["language"] = song.get("language") or detect_language(
@@ -459,38 +474,34 @@ def export_json():
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# Entry point — single command: auto-detect end, auto-resume, auto-export
 # ---------------------------------------------------------------------------
 async def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--start", type=int, default=492)
-    parser.add_argument("--end", type=int, default=2878)
-    parser.add_argument("--resume", action="store_true", help="continue from last checkpoint")
-    parser.add_argument("--export", action="store_true", help="export local JSON to songs_export.json")
-    args = parser.parse_args()
-
-    if args.export:
-        export_json()
-        return
-
     songs = load_songs()
-    start_id = args.start
-    end_id = args.end
-    if args.resume:
-        cp = get_checkpoint(songs)
-        if cp is not None:
-            start_id = min(start_id, cp + 1)
-            print(f"Resuming from message {start_id}")
+    done_ids = {s.get("message_id") for s in songs if s.get("status") == "done"}
+    log_line(f"Loaded {len(songs)} song(s) from {JSON_PATH} ({len(done_ids)} already done)")
 
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
     await client.start(phone=PHONE)
     me = await client.get_me()
-    print("Logged in as:", me.username or me.first_name)
+    log_line("Logged in as: " + (me.username or me.first_name))
 
     try:
+        channel = await client.get_entity(CHANNEL_ID)
+        # Auto-detect the newest message id in the channel (the "end")
+        newest = await client.get_messages(channel, limit=1)
+        end_id = newest[0].id if newest else 0
+        start_id = 492
+        log_line(f"Channel: {channel.title} | scanning {start_id} -> {end_id}")
+
+        # scan_range walks backwards from end_id and skips already-done ids,
+        # so resume is automatic — it continues from the missing ids.
         await scan_range(client, songs, start_id, end_id)
     finally:
         await client.disconnect()
+
+    # Auto-export done songs for D1 bulk upload
+    export_json()
 
 
 if __name__ == "__main__":

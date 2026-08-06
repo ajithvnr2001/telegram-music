@@ -21,6 +21,7 @@ __pycache__/
 songs.db
 songs.json
 songs_export.json
+scan.log
 telethon_session*
 *.session
 
