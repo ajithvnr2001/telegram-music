@@ -4,18 +4,18 @@ Tele Music Player — Resumable Channel Scanner + Metadata/Language Extractor
 
 Scans a private Telegram channel via MTProto (Telethon), downloads each media
 file, extracts rich metadata (title, artist, album, duration, codec, sample
-rate, channels, bitrate, language), and stores everything in a LOCAL SQLite
-database for later bulk upload to Cloudflare D1.
+rate, channels, bitrate, language), and stores everything as RAW JSON
+(songs.json) for later processing / bulk upload to Cloudflare D1.
 
 Crash-proof & resumable:
-  - Every song is written to SQLite immediately after processing.
+  - Every song is written to songs.json immediately after processing.
   - On restart, already-processed message_ids are skipped (no re-download).
   - A single bad file never aborts the run.
 
 Usage:
   python scan_songs.py --start 492 --end 2878
   python scan_songs.py --resume            # continue from last checkpoint
-  python scan_songs.py --export            # dump local DB to songs.json for D1
+  python scan_songs.py --export            # dump done songs to songs_export.json
 """
 
 import argparse
@@ -23,7 +23,6 @@ import asyncio
 import json
 import os
 import re
-import sqlite3
 import sys
 import time
 
@@ -45,7 +44,7 @@ API_HASH = "81ca4e214e172c32768809cbb9463d51"
 PHONE = "+916381445515"
 
 CHANNEL_ID = -1004303738393
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "songs.db")
+JSON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "songs.json")
 SESSION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "telethon_session")
 
 BATCH_SIZE = 50          # messages fetched per MTProto call
@@ -91,66 +90,46 @@ GENRE_LANG = {
 }
 
 # ---------------------------------------------------------------------------
-# Local SQLite store (resumable)
+# Local JSON store (raw data, resumable)
 # ---------------------------------------------------------------------------
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS songs (
-            message_id INTEGER PRIMARY KEY,
-            tg_file_id TEXT,
-            chat_id TEXT,
-            file_name TEXT,
-            title TEXT,
-            artist TEXT,
-            album TEXT,
-            genre TEXT,
-            year TEXT,
-            mime_type TEXT,
-            media_type TEXT,
-            size INTEGER,
-            duration REAL,
-            width INTEGER,
-            height INTEGER,
-            codec TEXT,
-            sample_rate INTEGER,
-            channels INTEGER,
-            bitrate INTEGER,
-            language TEXT,
-            added_at INTEGER,
-            status TEXT DEFAULT 'done'
-        )
-    """)
-    conn.commit()
-    return conn
+def load_songs():
+    """Load the songs list from the JSON file (empty list if missing/corrupt)."""
+    if os.path.exists(JSON_PATH):
+        try:
+            with open(JSON_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+        except Exception as e:
+            print(f"  (warning: could not read {JSON_PATH}: {e}; starting fresh)")
+    return []
 
 
-def is_done(conn, message_id):
-    row = conn.execute("SELECT 1 FROM songs WHERE message_id = ?", (message_id,)).fetchone()
-    return row is not None
+def save_songs(songs):
+    """Atomically write the songs list to the JSON file (temp file + rename)."""
+    tmp = JSON_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(songs, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, JSON_PATH)
 
 
-def save_song(conn, song):
-    conn.execute("""
-        INSERT OR REPLACE INTO songs (
-            message_id, tg_file_id, chat_id, file_name, title, artist, album,
-            genre, year, mime_type, media_type, size, duration, width, height,
-            codec, sample_rate, channels, bitrate, language, added_at, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        song["message_id"], song["tg_file_id"], song["chat_id"], song["file_name"],
-        song["title"], song["artist"], song["album"], song["genre"], song["year"],
-        song["mime_type"], song["media_type"], song["size"], song["duration"],
-        song["width"], song["height"], song["codec"], song["sample_rate"],
-        song["channels"], song["bitrate"], song["language"], song["added_at"],
-        song["status"],
-    ))
-    conn.commit()
+def is_done(songs, message_id):
+    return any(s.get("message_id") == message_id for s in songs)
 
 
-def get_checkpoint(conn):
-    row = conn.execute("SELECT MAX(message_id) FROM songs").fetchone()
-    return row[0] if row and row[0] else None
+def upsert_song(songs, song):
+    """Add or replace a song by message_id; returns the updated list."""
+    for i, s in enumerate(songs):
+        if s.get("message_id") == song["message_id"]:
+            songs[i] = song
+            return songs
+    songs.append(song)
+    return songs
+
+
+def get_checkpoint(songs):
+    ids = [s.get("message_id") for s in songs if s.get("message_id") is not None]
+    return max(ids) if ids else None
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +299,7 @@ def extract_metadata(file_path, mime):
 # ---------------------------------------------------------------------------
 # Main scan
 # ---------------------------------------------------------------------------
-async def scan_range(client, conn, start_id, end_id):
+async def scan_range(client, songs, start_id, end_id):
     channel = await client.get_entity(CHANNEL_ID)
     print(f"Channel: {channel.title}")
 
@@ -336,13 +315,14 @@ async def scan_range(client, conn, start_id, end_id):
         for msg in msgs:
             if msg.id < start_id:
                 break
-            if is_done(conn, msg.id):
+            if is_done(songs, msg.id):
                 skipped += 1
                 continue
             try:
                 song = await process_message(client, msg)
                 if song:
-                    save_song(conn, song)
+                    upsert_song(songs, song)
+                    save_songs(songs)  # checkpoint after every song (crash-proof)
                     total += 1
                     print(f"  [{msg.id}] {song['file_name']} | lang={song['language']} | {song['media_type']}")
                 else:
@@ -351,7 +331,7 @@ async def scan_range(client, conn, start_id, end_id):
                 errors += 1
                 print(f"  [{msg.id}] ERROR: {e}")
                 # mark as done so we don't retry forever on a corrupt file
-                save_song(conn, {
+                upsert_song(songs, {
                     "message_id": msg.id, "tg_file_id": None, "chat_id": str(CHANNEL_ID),
                     "file_name": None, "title": None, "artist": None, "album": None,
                     "genre": None, "year": None,
@@ -360,6 +340,7 @@ async def scan_range(client, conn, start_id, end_id):
                     "channels": None, "bitrate": None, "language": None,
                     "added_at": int(time.time() * 1000), "status": "error",
                 })
+                save_songs(songs)
             await asyncio.sleep(SLEEP_BETWEEN_MSGS)
 
         last_id = msgs[-1].id - 1
@@ -468,15 +449,13 @@ async def process_message(client, msg: Message):
 # Export to JSON for D1 bulk upload
 # ---------------------------------------------------------------------------
 def export_json():
-    conn = get_db()
-    rows = conn.execute("SELECT * FROM songs WHERE status='done' ORDER BY message_id").fetchall()
-    cols = [d[0] for d in conn.execute("SELECT * FROM songs").description]
-    songs = [dict(zip(cols, r)) for r in rows]
+    songs = load_songs()
+    done = [s for s in songs if s.get("status") == "done"]
     out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "songs_export.json")
     with open(out, "w", encoding="utf-8") as f:
-        json.dump(songs, f, ensure_ascii=False, indent=2)
-    print(f"Exported {len(songs)} songs to {out}")
-    return songs
+        json.dump(done, f, ensure_ascii=False, indent=2)
+    print(f"Exported {len(done)} songs to {out}")
+    return done
 
 
 # ---------------------------------------------------------------------------
@@ -487,18 +466,18 @@ async def main():
     parser.add_argument("--start", type=int, default=492)
     parser.add_argument("--end", type=int, default=2878)
     parser.add_argument("--resume", action="store_true", help="continue from last checkpoint")
-    parser.add_argument("--export", action="store_true", help="export local DB to JSON")
+    parser.add_argument("--export", action="store_true", help="export local JSON to songs_export.json")
     args = parser.parse_args()
 
     if args.export:
         export_json()
         return
 
-    conn = get_db()
+    songs = load_songs()
     start_id = args.start
     end_id = args.end
     if args.resume:
-        cp = get_checkpoint(conn)
+        cp = get_checkpoint(songs)
         if cp is not None:
             start_id = min(start_id, cp + 1)
             print(f"Resuming from message {start_id}")
@@ -509,10 +488,9 @@ async def main():
     print("Logged in as:", me.username or me.first_name)
 
     try:
-        await scan_range(client, conn, start_id, end_id)
+        await scan_range(client, songs, start_id, end_id)
     finally:
         await client.disconnect()
-        conn.close()
 
 
 if __name__ == "__main__":

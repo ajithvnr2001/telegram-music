@@ -19,6 +19,7 @@ progress.md
 __pycache__/
 *.pyc
 songs.db
+songs.json
 songs_export.json
 telethon_session*
 *.session
