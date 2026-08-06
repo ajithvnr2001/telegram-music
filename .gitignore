@@ -12,6 +12,9 @@ dev.vars
 # Secrets & local notes — never commit tokens
 instructions.txt
 
+# Local progress log — not for the repo
+progress.md
+
 # Logs
 *.log
 npm-debug.log*

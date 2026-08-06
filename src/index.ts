@@ -7,6 +7,7 @@ import { extractMedia, fmtSize, indexFile, setWorkerUrl } from "./upload";
 import { handleFileServe, handleWebUpload } from "./hosting";
 import { renderPlayerPage } from "./web";
 import { handleAuth, runScan, scannerStatus } from "./scanner";
+import { handleFfmpegAsset, setWaitUntil } from "./ffmpeg-assets";
 
 export { ChannelScanner } from "./scanner";
 
@@ -181,6 +182,7 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     setWorkerUrl(url.origin);
+    setWaitUntil((p) => ctx.waitUntil(p));
 
     if (request.method === "OPTIONS") {
       return new Response(null, {
@@ -195,13 +197,16 @@ export default {
 
     const path = url.pathname;
 
+    if (path.startsWith("/ffmpeg/")) {
+      const asset = await handleFfmpegAsset(path.slice("/ffmpeg/".length));
+      if (asset) return asset;
+    }
+
     if (path === "/" || path === "/index.html") {
       return new Response(renderPlayerPage(!!env.WEB_PASSWORD), {
         headers: {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-store",
-          "Cross-Origin-Opener-Policy": "same-origin",
-          "Cross-Origin-Embedder-Policy": "require-corp",
         },
       });
     }

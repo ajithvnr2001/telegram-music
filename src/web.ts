@@ -415,21 +415,20 @@ export function renderPlayerPage(passwordProtected: boolean): string {
           scr.onerror = () => rej(new Error("failed to load " + src));
           document.head.appendChild(scr);
         });
-        const coreBase = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
         Promise.all([
-          loadScript("https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"),
-          loadScript("https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js"),
+          loadScript("/ffmpeg/ffmpeg.js"),
+          loadScript("/ffmpeg/util.js"),
         ]).then(async () => {
           try {
             const { FFmpeg } = window.FFmpegWASM;
             const { toBlobURL } = window.FFmpegUtil;
             const ffmpeg = new FFmpeg();
-            ffmpeg.setLogger(({ type, message }) => {
+            ffmpeg.on("log", ({ type, message }) => {
               if (type === "error") console.error("[ffmpeg]", message);
             });
             await ffmpeg.load({
-              coreURL: await toBlobURL(coreBase + "/ffmpeg-core.js", "text/javascript"),
-              wasmURL: await toBlobURL(coreBase + "/ffmpeg-core.wasm", "application/wasm"),
+              coreURL: await toBlobURL("/ffmpeg/core.js", "text/javascript"),
+              wasmURL: await toBlobURL("/ffmpeg/core.wasm", "application/wasm"),
             });
             resolve(ffmpeg);
           } catch (e) { reject(e); }
