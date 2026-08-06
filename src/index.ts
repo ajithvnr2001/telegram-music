@@ -347,6 +347,36 @@ export default {
       return json({ ok: true, songsInserted: inserted, stateKeys: Object.keys(body.state ?? {}).length });
     }
 
+    if (path === "/api/import" && request.method === "POST") {
+      const token = request.headers.get("X-Auth-Secret") ?? url.searchParams.get("token");
+      if (token !== env.WEBHOOK_SECRET) return json({ error: "unauthorized" }, 401);
+      const body = (await request.json().catch(() => ({}))) as { songs?: any[] };
+      let inserted = 0;
+      for (const s of body.songs ?? []) {
+        await env.DB.prepare(
+          `INSERT INTO songs (tg_file_id, tg_unique_id, chat_id, message_id, file_name, title, artist,
+            mime_type, media_type, size, duration, width, height, added_at, added_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(chat_id, message_id) DO UPDATE SET
+             tg_file_id = excluded.tg_file_id,
+             file_name = excluded.file_name,
+             title = excluded.title,
+             artist = excluded.artist,
+             mime_type = excluded.mime_type,
+             media_type = excluded.media_type,
+             size = excluded.size,
+             duration = excluded.duration,
+             width = excluded.width,
+             height = excluded.height`,
+        )
+          .bind(s.tg_file_id, s.tg_unique_id, s.chat_id, s.message_id, s.file_name, s.title, s.artist,
+            s.mime_type, s.media_type, s.size, s.duration, s.width, s.height, s.added_at, s.added_by)
+          .run();
+        inserted++;
+      }
+      return json({ ok: true, songsUpserted: inserted });
+    }
+
     if (path === "/api/playlists" && request.method === "GET") {
       return json(await listPlaylists(env));
     }

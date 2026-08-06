@@ -15,6 +15,14 @@ instructions.txt
 # Local progress log — not for the repo
 progress.md
 
+# Python scanner local state (never commit)
+__pycache__/
+*.pyc
+songs.db
+songs_export.json
+telethon_session*
+*.session
+
 # Logs
 *.log
 npm-debug.log*
