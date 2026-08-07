@@ -18,7 +18,8 @@ later bulk upload to Cloudflare D1.
 | `songs.json` | Already-scanned songs (raw data, resumable checkpoint) |
 | `songs_export.json` | Done songs, ready for D1 bulk upload |
 | `scan.log` | Log of the scan progress |
-| `setup_vps.sh` | AlmaLinux/RHEL VPS setup script (systemd + cron) |
+| `setup_vps.sh` | Ubuntu/AlmaLinux VPS setup script (systemd + cron) |
+| `DEPLOYMENT_GUIDE.md` | **Full end-to-end guide** (Cloudflare + Oracle VPS + scanner + daily sync) |
 
 ---
 
@@ -130,10 +131,13 @@ It scans → exports → POSTs `songs_export.json` to `/api/import` (upsert).
 
 ---
 
-## 7. Running on a VPS (AlmaLinux / RHEL)
+## 7. Running on a VPS (fully VPS-based)
 
 A 1GB / 1-core VPS is enough — metadata extraction is light (mutagen reads
 tags, doesn't decode audio). The bottleneck is download speed, not CPU/RAM.
+
+> **Full step-by-step guide:** see **`DEPLOYMENT_GUIDE.md`** for the complete
+> end-to-end setup (Cloudflare Worker + Oracle VPS + scanner + daily sync).
 
 ### Quick setup
 ```bash
@@ -147,9 +151,9 @@ sudo bash setup_vps.sh
 echo 'WEBHOOK_SECRET=YOUR_PRODUCTION_SECRET' > /etc/tele-music-scan.env
 chmod 600 /etc/tele-music-scan.env
 
-# 4. Enable the systemd service (auto-run on boot + daily):
+# 4. Enable the systemd timer (daily 02:00):
 systemctl daemon-reload
-systemctl enable --now tele-music-scan
+systemctl enable --now tele-music-scan.timer
 
 # 5. Test manually:
 cd /opt/tele-music-scanner && python3 scan_songs.py --sync
@@ -157,13 +161,13 @@ cd /opt/tele-music-scanner && python3 scan_songs.py --sync
 
 The setup script installs:
 - Python 3 + pip + `telethon` + `mutagen`
-- A **systemd service** (`tele-music-scan`) that runs `scan_songs.py --sync` on boot
-- A **cron job** (daily 02:00) as a fallback
+- A **systemd service** (`tele-music-scan`) that runs `scan_songs.py --sync`
+- A **systemd timer** (daily 02:00) + a **cron job** as fallback
 
-### Recommended: disable the Worker's own 6h scan cron
-Since the VPS now handles scanning + metadata + sync, disable the Worker's
-`0 */6 * * *` cron to avoid duplicate work. (Edit `wrangler.jsonc` → remove the
-`triggers.crons` entry, or remove the cron trigger in the Cloudflare dashboard.)
+### The Worker's cron is DISABLED
+Since the VPS now handles all scanning + metadata + sync, the Cloudflare
+Worker's `0 */6 * * *` cron has been **removed** to avoid duplicate work. The
+Worker only serves the player and streams audio.
 
 ---
 
