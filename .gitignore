@@ -24,6 +24,7 @@ songs_export.json
 scan.log
 telethon_session*
 *.session
+tele-music-scanner.zip
 
 # Logs
 *.log

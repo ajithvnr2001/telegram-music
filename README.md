@@ -228,6 +228,36 @@ In short:
 
 ---
 
+## VPS scanner + metadata sync (optional)
+
+The Worker's 6h cron indexes songs but can't extract rich metadata (title,
+artist, album, genre, year, codec, sample rate, channels, bitrate, language)
+because that requires downloading each file. For that, run the Python scanner
+on a small VPS (1GB / 1 core is enough) and auto-sync metadata to D1.
+
+```
+[Telegram Channel] ──► [VPS 1GB/1core] ──► POST /api/import ──► [Cloudflare Worker + D1]
+                        scan_songs.py --sync
+                        (download + metadata + language)
+```
+
+- `scan_songs.py` — resumable scanner (auto-detect end, auto-resume, auto-export).
+- `login.py` — one-time Telethon login.
+- `setup_vps.sh` — AlmaLinux/RHEL setup (systemd + cron).
+- `--sync` flag POSTs `songs_export.json` to `/api/import` (upsert, non-destructive).
+
+See `scanner_package/README.md` for full instructions. Once the VPS handles
+scanning, you can disable the Worker's `0 */6 * * *` cron to avoid duplicate work.
+
+## Playable file size limit (200MB)
+
+Files up to **200MB** stream seamlessly and losslessly. Files >20MB can't use
+the Bot API `getFile` (Telegram caps it at 20MB), so they stream via MTProto
+(`upload.getFile` chunked streaming). Browsers use Range requests for
+streaming/seeking, so playback is lossless up to 200MB.
+
+---
+
 ## Deployment checklist (end-to-end)
 
 1. `npm install`

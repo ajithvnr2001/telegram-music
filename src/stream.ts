@@ -4,7 +4,8 @@ import { mtDocLocation, mtpFreshDocument, mtpGetChunk, resetMTProto } from "./sc
 
 const CDN_FETCH_TIMEOUT_MS = 25000;
 // 1 MiB = upload.getFile max part size (defined implicitly via 1 << 20 in the stream loop).
-const MT_THRESHOLD = 20 * 1024 * 1024;
+// Files up to 200MB stream via MTProto (Bot API getFile caps at 20MB).
+const MT_THRESHOLD = 200 * 1024 * 1024;
 
 // MTProto upload.getFile non-precise rules: offset must be divisible by 4 KiB,
 // limit ≤ 1 MiB, and the whole read must stay inside a single 1 MiB chunk. The
