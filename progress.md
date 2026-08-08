@@ -77,6 +77,24 @@ schedule — no manual steps.
    movie titles ("Roja …", "Bombay Dreams", "Tirumala" …) to Hindi / Tamil /
    Telugu / Kannada / Malayalam / Bengali.
 
+6. **Large/ALAC songs didn't play (msg 8619 → worker id 6375, 45.4 MB).**
+   - Root cause: the Telegram file server truncates every `GET /stream` body
+     at ~8 MiB (full-body probe: exactly 8,388,608 bytes; longer ranged
+     requests die at ~7–14 MiB after 3–4 s), while **small ranged requests
+     (≤ 4 MiB) always return intact** (verified at offsets 0, 4 MiB, 8 MiB,
+     30 MiB and the file tail).
+   - Worker fix (`src/stream.ts`): `CDN_SLICE_BYTES = 4 MiB` slice-and-stitch
+     on the streaming path (`/stream`), still serving 200/206 with exact
+     `Content-Length` / `Content-Range`.
+   - Player fix (`src/web.ts`): for any file the browser probes
+     `Range: bytes=0-0` for the total from `content-range`, that downloads
+     the whole file in 4 MiB ranged chunks (toast progress), assembles it,
+     converts ALAC→FLAC losslessly in-browser and plays it — the original
+     file is served byte-for-byte "as-is".
+   - Verified live: tail range `-45431410` returns exactly
+     `content-range: bytes 41943040-45431410/45431411`, deployed UI contains
+     the chunked downloader.
+
 ---
 
 ## Validation evidence (from /opt/tele-music-scanner/scan.log)

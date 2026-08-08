@@ -7,6 +7,12 @@ const CDN_FETCH_TIMEOUT_MS = 25000;
 // Files up to 200MB stream via MTProto (Bot API getFile caps at 20MB).
 const MT_THRESHOLD = 200 * 1024 * 1024;
 
+// Telegram's file server caps every single HTTP response at ~8 MiB: range-less
+// downloads and ranges longer than that are silently truncated mid-body. To
+// guarantee intact delivery the CDN path fetches upstream in slices that fit
+// comfortably under the cap and stitches them together.
+const CDN_SLICE_BYTES = 4 * 1024 * 1024;
+
 // MTProto upload.getFile non-precise rules: offset must be divisible by 4 KiB,
 // limit ≤ 1 MiB, and the whole read must stay inside a single 1 MiB chunk. The
 // simplest compliant strategy is to read 1 MiB-aligned chunks and slice out the
@@ -159,7 +165,7 @@ export async function handleStream(
   const needsMT = song.size > MT_THRESHOLD;
 
   if (needsMT && !loc) {
-    return new Response("File is larger than 20MB and cannot be located via MTProto.", { status: 502 });
+    return new Response("File is larger than 200MB and cannot be located via MTProto.", { status: 502 });
   }
 
   if (needsMT) {
@@ -176,7 +182,7 @@ export async function handleStream(
   if (cdn) return cdn;
   if (!loc) return new Response("File is not available on Telegram.", { status: 404 });
 
-  // CDN said the file is not available (usually >20MB) — try the MTProto path.
+  // CDN said the file is not available or truncated it — try the MTProto path.
   try {
     return await handleStreamMT(request, env, song, loc, baseHeaders);
   } catch (e: any) {
@@ -244,43 +250,8 @@ async function handleStreamCDN(
     return null; // caller decides fallback
   }
 
+  const total = song.size > 0 ? song.size : 0;
   const rangeHeader = request.headers.get("range");
-  const upstreamHeaders: Record<string, string> = {};
-  if (rangeHeader) upstreamHeaders["Range"] = rangeHeader;
-
-  let upstream: Response;
-  try {
-    upstream = await fetch(downloadUrl, {
-      method: "GET",
-      headers: upstreamHeaders,
-      signal: AbortSignal.timeout(CDN_FETCH_TIMEOUT_MS),
-    });
-  } catch {
-    return new Response("Telegram CDN unreachable", { status: 502 });
-  }
-
-  const total = song.size > 0 ? song.size : parseContentLength(upstream.headers.get("content-length"));
-
-  if (!upstream.ok && upstream.status !== 206) {
-    if (upstream.status === 416 && total > 0) {
-      return new Response(null, {
-        status: 416,
-        headers: { ...baseHeaders, "Content-Range": `bytes */${total}` },
-      });
-    }
-    return new Response(`Telegram CDN error: ${upstream.status}`, { status: 502 });
-  }
-
-  if (!rangeHeader) {
-    return new Response(upstream.body, {
-      status: 200,
-      headers: {
-        ...baseHeaders,
-        ...(total > 0 ? { "Content-Length": String(total) } : {}),
-      },
-    });
-  }
-
   const parsed = parseRange(rangeHeader, total);
 
   if (parsed === "unsatisfiable") {
@@ -290,33 +261,95 @@ async function handleStreamCDN(
     });
   }
 
-  if (parsed && upstream.status === 206) {
+  const start = parsed?.start ?? 0;
+  const end = parsed?.end ?? total - 1;
+
+  // Single-range requests that fit under the slice cap can go straight to a
+  // one-shot upstream fetch (fast path, preserves the previous behavior).
+  if (parsed && end - start + 1 <= CDN_SLICE_BYTES) {
+    const upstream = await fetchCdnRange(downloadUrl, start, end);
+    if (!upstream) return new Response("Telegram CDN unreachable", { status: 502 });
+    if (upstream.status !== 206 && upstream.status !== 200) {
+      return new Response(`Telegram CDN error: ${upstream.status}`, { status: 502 });
+    }
     return new Response(upstream.body, {
       status: 206,
       headers: {
         ...baseHeaders,
-        "Content-Length": upstream.headers.get("content-length") ?? String(parsed.end - parsed.start + 1),
-        "Content-Range": upstream.headers.get("content-range") ?? `bytes ${parsed.start}-${parsed.end}/${total}`,
+        "Content-Length": upstream.headers.get("content-length") ?? String(end - start + 1),
+        "Content-Range": upstream.headers.get("content-range") ?? `bytes ${start}-${end}/${total}`,
       },
     });
   }
 
-  if (parsed) {
-    const buf = await upstream.arrayBuffer();
-    const sliced = buf.slice(parsed.start, parsed.end + 1);
-    return new Response(sliced, {
-      status: 206,
-      headers: {
-        ...baseHeaders,
-        "Content-Length": String(sliced.byteLength),
-        "Content-Range": `bytes ${parsed.start}-${parsed.end}/${total}`,
-      },
-    });
-  }
+  // Full-body / long-range: fetch upstream in slices that stay under the
+  // Telegram ~8 MiB per-response cap, then stitch them into one stream.
+  return sliceResponse(downloadUrl, start, end, total, !!parsed, baseHeaders);
+}
 
-  return new Response(upstream.body, {
-    status: 200,
-    headers: { ...baseHeaders, "Content-Length": String(total) },
+function fetchCdnRange(
+  downloadUrl: string,
+  start: number,
+  end: number,
+): Promise<Response> {
+  return fetch(downloadUrl, {
+    method: "GET",
+    headers: { Range: `bytes=${start}-${end}` },
+    signal: AbortSignal.timeout(CDN_FETCH_TIMEOUT_MS),
+  });
+}
+
+function sliceResponse(
+  downloadUrl: string,
+  start: number,
+  end: number,
+  total: number,
+  isRange: boolean,
+  baseHeaders: Record<string, string>,
+): Response {
+  let cursor = start;
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (cursor > end) {
+        controller.close();
+        return;
+      }
+      const sliceEnd = Math.min(end, cursor + CDN_SLICE_BYTES - 1);
+      let res: Response;
+      try {
+        res = await fetchCdnRange(downloadUrl, cursor, sliceEnd);
+      } catch {
+        controller.error(new Error(`CDN slice unreachable at ${cursor}`));
+        return;
+      }
+      if (res.status !== 206 && res.status !== 200) {
+        controller.error(new Error(`CDN slice HTTP ${res.status} at ${cursor}`));
+        return;
+      }
+      const reader = res.body?.getReader();
+      if (!reader) {
+        controller.error(new Error(`CDN slice body missing at ${cursor}`));
+        return;
+      }
+      while (cursor <= sliceEnd) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        controller.enqueue(value);
+      }
+      cursor = sliceEnd + 1;
+    },
+    cancel() {
+      cursor = end + 1;
+    },
+  });
+  const len = end - start + 1;
+  return new Response(body, {
+    status: isRange ? 206 : 200,
+    headers: {
+      ...baseHeaders,
+      "Content-Length": String(len),
+      ...(isRange ? { "Content-Range": `bytes ${start}-${end}/${total}` } : {}),
+    },
   });
 }
 

@@ -444,12 +444,40 @@ export function renderPlayerPage(passwordProtected: boolean): string {
       playWA(await cached.decoded, s);
       return;
     }
+    // The Telegram-backed /stream truncates bodies wider than ~8 MiB, so the
+    // whole file is pulled in small range requests (proven to always be
+    // served intact) and reassembled in memory — then converted losslessly.
+    const url = streamUrl(s.id);
+    const CHUNK = 4 * 1024 * 1024;
+    toast("Downloading (lossless)…");
+    const probe = await fetch(url, { headers: { Range: "bytes=0-0" } });
+    if (!probe.ok) throw new Error("stream failed");
+    let total = 0;
+    const cr = probe.headers.get("content-range");
+    if (cr) total = parseInt(cr.split("/")[1], 10);
+    if (!total) {
+      const len = probe.headers.get("content-length");
+      total = len ? parseInt(len, 10) : 0;
+    }
+    if (!total) throw new Error("stream failed");
+    const parts = [];
+    let have = 0;
+    const nChunks = Math.ceil(total / CHUNK);
+    for (let off = 0; off < total; off += CHUNK) {
+      const end = Math.min(total - 1, off + CHUNK - 1);
+      const r = await fetch(url, { headers: { Range: "bytes=" + off + "-" + end } });
+      if (!r.ok) throw new Error("stream failed (" + r.status + ")");
+      const part = new Uint8Array(await r.arrayBuffer());
+      parts.push(part);
+      have += part.byteLength;
+      if (nChunks > 1) toast("Downloading… " + Math.floor((have * 100) / total) + "%");
+    }
+    const buf = new Uint8Array(total);
+    let pos = 0;
+    for (const part of parts) { buf.set(part, pos); pos += part.byteLength; }
     toast("Converting to FLAC (lossless)…");
     const ffmpeg = await ensureFFmpeg();
-    const resp = await fetch(streamUrl(s.id));
-    if (!resp.ok) throw new Error("stream failed");
-    const buf = await resp.arrayBuffer();
-    ffmpeg.writeFile("in.m4a", new Uint8Array(buf));
+    ffmpeg.writeFile("in.m4a", buf);
     await ffmpeg.exec(["-i", "in.m4a", "-vn", "-c:a", "flac", "out.flac"]);
     let out;
     try {
