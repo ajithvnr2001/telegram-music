@@ -243,11 +243,15 @@ on a small VPS (1GB / 1 core is enough) and auto-sync metadata to D1.
 
 - `scan_songs.py` — resumable scanner (auto-detect end, auto-resume, auto-export).
 - `login.py` — one-time Telethon login.
-- `setup_vps.sh` — AlmaLinux/RHEL setup (systemd + cron).
-- `--sync` flag POSTs `songs_export.json` to `/api/import` (upsert, non-destructive).
+- `run_scan.sh` — cron driver; flock-guarded, logs RUN/SKIP, calls `scan_songs.py --sync`.
+- `setup_vps.sh` — Ubuntu/AlmaLinux setup; installs deps, env file, cron.d entry.
+- `--sync` POSTs `songs_export.json` to `/api/import` (upsert, non-destructive),
+  **periodically during scanning** (every `SYNC_EVERY`, default 100) and at run end — so whatever has been scanned is auto-deployed to Cloudflare every 5 hours via cron.
 
-See `scanner_package/README.md` for full instructions. Once the VPS handles
-scanning, you can disable the Worker's `0 */6 * * *` cron to avoid duplicate work.
+See `scanner_package/README.md` for full instructions (incl. the `/etc/cron.d`
+entry: `0 */5 * * * root /opt/tele-music-scanner/run_scan.sh` + `@reboot`).
+Once the VPS handles scanning, disable the Worker's `0 */6 * * *` cron to avoid
+duplicate work.
 
 ## Playable file size limit (200MB)
 

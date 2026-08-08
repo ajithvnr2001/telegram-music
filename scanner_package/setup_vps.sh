@@ -2,6 +2,10 @@
 # =============================================================================
 # Tele Music Player — VPS Scanner Setup (Ubuntu / AlmaLinux / RHEL / CentOS)
 # Run as root:  sudo bash setup_vps.sh
+#
+# Installs the resumable scanner + run_scan.sh driver and schedules it via
+# /etc/cron.d every 5 hours (with a @reboot catch-up). The scanner resumes
+# from songs.json and syncs whatever has been scanned so far to Cloudflare.
 # =============================================================================
 set -e
 
@@ -28,56 +32,72 @@ pip3 install telethon mutagen
 
 echo "=== Creating scanner directory ==="
 mkdir -p /opt/tele-music-scanner
-echo "Place scan_songs.py, login.py, telethon_session.session, songs.json here: /opt/tele-music-scanner"
+echo "Place scan_songs.py, run_scan.sh, login.py, telethon_session.session, songs.json here: /opt/tele-music-scanner"
 
-echo "=== Setting up systemd service (auto-run on boot) ==="
-cat > /etc/systemd/system/tele-music-scan.service <<'EOF'
-[Unit]
-Description=Tele Music Scanner
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-WorkingDirectory=/opt/tele-music-scanner
-Environment=WORKER_URL=https://tele-music-player.ajithvnr2001.workers.dev
-EnvironmentFile=/etc/tele-music-scan.env
-ExecStart=/usr/bin/python3 /opt/tele-music-scanner/scan_songs.py --sync
+echo "=== Creating the env file (secrets) ==="
+cat > /etc/tele-music-scan.env <<'EOF'
+WORKER_URL=https://tele-music-player.ajithvnr2001.workers.dev
+WEBHOOK_SECRET=YOUR_PRODUCTION_SECRET
+# Optional: sync to Cloudflare every N newly-scanned songs (default 100). 0 disables periodic sync.
+SYNC_EVERY=100
 EOF
+chmod 600 /etc/tele-music-scan.env
+echo "EDIT /etc/tele-music-scan.env and set the real WEBHOOK_SECRET (chmod 600 already applied)."
 
-echo "=== Setting up systemd timer (daily at 02:00) ==="
-cat > /etc/systemd/system/tele-music-scan.timer <<'EOF'
-[Unit]
-Description=Run Tele Music Scanner daily at 02:00
+echo "=== Installing run_scan.sh (cron driver with flock) ==="
+cat > /opt/tele-music-scanner/run_scan.sh <<'EOF'
+#!/bin/bash
+# Tele Music Scanner — cron driver.
+# Loads WORKER_URL / WEBHOOK_SECRET / SYNC_EVERY from the env file,
+# runs the resumable scanner and syncs newly scanned songs to Cloudflare.
+# A flock guard prevents overlapping runs on long backfill scans.
 
-[Timer]
-OnCalendar=*-*-* 02:00:00
-Persistent=true
+DIR=/opt/tele-music-scanner
+ENV_FILE=/etc/tele-music-scan.env
+LOCK_FILE=/run/tele-music-scan.lock
+LOG=/opt/tele-music-scanner/scan.log
 
-[Install]
-WantedBy=timers.target
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    . "$ENV_FILE"
+    set +a
+fi
+
+export WORKER_URL="${WORKER_URL:-https://tele-music-player.ajithvnr2001.workers.dev}"
+cd "$DIR"
+exec 9>>"$LOCK_FILE"
+
+if flock -n 9; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] RUN START (lock acquired)" >> "$LOG"
+    /bin/python3 "$DIR/scan_songs.py" --sync >> "$LOG" 2>&1
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] RUN END (scanner exit $?)" >> "$LOG"
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] SKIP run: previous scan still in progress" >> "$LOG"
+fi
 EOF
+chmod 755 /opt/tele-music-scanner/run_scan.sh
 
-echo "=== Setting up cron (daily at 02:00) as a fallback ==="
+echo "=== Setting up cron (every 5 hours + catch-up on boot) ==="
 cat > /etc/cron.d/tele-music-scan <<'EOF'
-# Run the scanner daily at 02:00, push metadata to Cloudflare
-0 2 * * * root cd /opt/tele-music-scanner && WORKER_URL=https://tele-music-player.ajithvnr2001.workers.dev /usr/bin/python3 /opt/tele-music-scanner/scan_songs.py --sync >> /opt/tele-music-scanner/scan.log 2>&1
+# Tele Music Scanner - every 5h: resume indefinite scan + push to Cloudflare
+0 */5 * * * root /opt/tele-music-scanner/run_scan.sh
+
+# Catch up right after boot if the VM was off at a scheduled slot
+@reboot root /opt/tele-music-scanner/run_scan.sh
 EOF
 
 echo ""
 echo "=== NEXT STEPS ==="
-echo "1. Copy the scanner files into /opt/tele-music-scanner:"
+echo "1. Copy scanner files into /opt/tele-music-scanner:"
 echo "     scp scan_songs.py login.py telethon_session.session songs.json root@YOUR_VPS:/opt/tele-music-scanner/"
 echo ""
-echo "2. Set the production WEBHOOK_SECRET (needed for --sync):"
-echo "     echo 'WEBHOOK_SECRET=YOUR_PRODUCTION_SECRET' > /etc/tele-music-scan.env"
-echo "     chmod 600 /etc/tele-music-scan.env"
+echo "2. Set the real WEBHOOK_SECRET in /etc/tele-music-scan.env"
 echo ""
-echo "3. Enable the timer:"
-echo "     systemctl daemon-reload"
-echo "     systemctl enable --now tele-music-scan.timer"
+echo "3. Test manually (validates lock, resume + Cloudflare sync):"
+echo "     bash /opt/tele-music-scanner/run_scan.sh"
+echo "     tail -f /opt/tele-music-scanner/scan.log   # look for \"SYNC chunk ... songsUpserted\""
 echo ""
-echo "4. Test manually:"
-echo "     cd /opt/tele-music-scanner && python3 scan_songs.py --sync"
+echo "4. Cron runs itself every 5 hours. While a run is in progress, extra triggers"
+echo "   log 'SKIP run: previous scan still in progress' to scan.log (flock guard)."
 echo ""
 echo "DONE."

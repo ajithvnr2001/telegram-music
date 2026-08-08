@@ -49,6 +49,14 @@ SESSION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "teletho
 WORKER_URL = os.environ.get("WORKER_URL", "https://tele-music-player.ajithvnr2001.workers.dev")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 
+# Periodic sync: push whatever has been scanned so far every N new songs
+# (0 disables; the final sync at end of run always happens).
+SYNC_EVERY = int(os.environ.get("SYNC_EVERY", "100"))
+
+# Optional range override for testing/partial scans (env vars)
+START_ID_OVERRIDE = os.environ.get("START_ID")
+END_ID_OVERRIDE = os.environ.get("END_ID")
+
 BATCH_SIZE = 50          # messages fetched per MTProto call
 SLEEP_BETWEEN_MSGS = 0.2 # seconds between messages (avoid flood)
 DOWNLOAD_TIMEOUT = 300   # seconds per file download
@@ -89,6 +97,32 @@ GENRE_LANG = {
     "rock": "English", "jazz": "English", "classical": "English",
     "k-pop": "Korean", "kpop": "Korean", "j-pop": "Japanese", "jpop": "Japanese",
     "arabic": "Arabic", "nepali": "Nepali", "urdu": "Urdu",
+    "worldwide": None, "soundtrack": None, "regional indian": None, "indian": None,
+}
+
+# Album/movie title → language (covers tags that only say "Worldwide"/"Soundtrack")
+ALBUM_LANG = {
+    "between heaven and earth": "Chinese", "warriors of heaven and earth": "Chinese",
+    "bombay dreams": "English", "lord of the rings": "English",
+    "jaane tu": "Hindi", "yuvvraaj": "Hindi", "guru": "Hindi",
+    "rockstar": "Hindi", "raees": "Hindi", "rang de basanti": "Hindi",
+    "swades": "Hindi", "lagaan": "Hindi", "jodhaa akbar": "Hindi",
+    "dil se": "Hindi", "kadhalan": "Tamil", "bombay": "Tamil",
+    "minsara kanavu": "Tamil", "jeans": "Tamil", "alai payuthey": "Tamil",
+    "kandukondain": "Tamil", "poi solla porum": "Tamil", "guru": "Tamil",
+    "sillunu oru kaadhal": "Tamil", "varalaru": "Tamil", "azhagiya theeye": "Tamil",
+    "tirumala": "Telugu", "simhadri": "Telugu", "narasimha": "Telugu",
+    "chandramukhi": "Kannada", "apthamitra": "Kannada",
+    "geetha": "Kannada", "chhota": "Hindi", "milenge": "Hindi",
+    "kadhal roja": "Tamil", "roja": "Tamil", "ratchagan": "Tamil",
+    "naam iruvar": "Tamil", "iruvan": "Tamil", "manadil": "Tamil",
+    "alaipaayuthey": "Tamil", "minsara": "Tamil", "kannathil": "Tamil",
+    "saturan": "Tamil", "vande mataram": "Hindi", "bombay dreams": "English",
+    "12b": "Hindi", "maliha": "Hindi",
+    "ninaivellam nee": "Tamil", "kadhal kottai": "Tamil",
+    "thiruda thiruda": "Tamil", "karuthamma": "Tamil",
+    "indira": "Tamil", "menma": "Malayalam",
+    "aalay": "Malayalam", "biman": "Bengali",
 }
 
 # ---------------------------------------------------------------------------
@@ -242,7 +276,12 @@ def detect_language(file_name, title, artist, genre=None, album=None):
     if genre:
         g = genre.lower()
         for hint, lang in GENRE_LANG.items():
-            if hint in g:
+            if hint in g and lang:
+                return lang
+    if album:
+        a = album.lower()
+        for hint, lang in ALBUM_LANG.items():
+            if hint in a:
                 return lang
     return None
 
@@ -338,6 +377,9 @@ async def scan_range(client, songs, start_id, end_id):
                     save_songs(songs)  # checkpoint after every song (crash-proof)
                     total += 1
                     log_line(f"[{msg.id}] OK {song['file_name']} | lang={song['language']} | {song['media_type']}")
+                    if SYNC_EVERY > 0 and total % SYNC_EVERY == 0:
+                        log_line(f"Periodic sync (every {SYNC_EVERY} songs this run)...")
+                        await asyncio.to_thread(sync_to_cloudflare)
                 else:
                     skipped += 1
             except Exception as e:
@@ -491,24 +533,31 @@ def sync_to_cloudflare():
         return False
 
     url = WORKER_URL.rstrip("/") + "/api/import"
-    payload = json.dumps({"songs": songs}).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "X-Auth-Secret": WEBHOOK_SECRET,
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-        log_line(f"SYNC OK: {result}")
-        return True
-    except Exception as e:
-        log_line(f"SYNC FAILED: {e}")
-        return False
+    # Chunk the upload so large libraries fit within worker request limits.
+    chunk_size = 200
+    all_ok = True
+    for i in range(0, len(songs), chunk_size):
+        chunk = songs[i:i + chunk_size]
+        payload = json.dumps({"songs": chunk}).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "X-Auth-Secret": WEBHOOK_SECRET,
+                # Cloudflare blocks requests with the default Python-urllib UA
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+            log_line(f"SYNC chunk {i//chunk_size+1}: {result}")
+        except Exception as e:
+            log_line(f"SYNC chunk {i//chunk_size+1} FAILED: {e}")
+            all_ok = False
+    return all_ok
 
 
 # ---------------------------------------------------------------------------
@@ -534,8 +583,8 @@ async def main():
         channel = await client.get_entity(CHANNEL_ID)
         # Auto-detect the newest message id in the channel (the "end")
         newest = await client.get_messages(channel, limit=1)
-        end_id = newest[0].id if newest else 0
-        start_id = 492
+        end_id = int(END_ID_OVERRIDE) if END_ID_OVERRIDE else (newest[0].id if newest else 0)
+        start_id = int(START_ID_OVERRIDE) if START_ID_OVERRIDE else 482
         log_line(f"Channel: {channel.title} | scanning {start_id} -> {end_id}")
 
         # scan_range walks backwards from end_id and skips already-done ids,
