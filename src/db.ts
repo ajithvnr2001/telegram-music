@@ -18,6 +18,14 @@ export function songRow(row: Record<string, unknown>): Song {
     height: row.height ? Number(row.height) : null,
     added_at: Number(row.added_at),
     added_by: row.added_by ? Number(row.added_by) : null,
+    album: row.album ? String(row.album) : null,
+    genre: row.genre ? String(row.genre) : null,
+    year: row.year ? String(row.year) : null,
+    codec: row.codec ? String(row.codec) : null,
+    sample_rate: row.sample_rate ? Number(row.sample_rate) : null,
+    channels: row.channels ? Number(row.channels) : null,
+    bitrate: row.bitrate ? Number(row.bitrate) : null,
+    language: row.language ? String(row.language) : null,
   };
 }
 

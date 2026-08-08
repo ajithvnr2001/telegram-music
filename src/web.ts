@@ -26,14 +26,13 @@ export function renderPlayerPage(passwordProtected: boolean): string {
   #search { width: 100%; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.14); color: #e8ecf4; border-radius: 12px; padding: 13px 18px; font-size: 15px; outline: none; margin-bottom: 20px; transition: border .2s; }
   #search:focus { border-color: #4f7dff; }
   #search::placeholder { color: #5d6880; }
-  #filters { display: flex; gap: 8px; margin-bottom: 20px; }
-  #filters select { flex: 1; min-width: 0; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.14); color: #aeb8cc; border-radius: 10px; padding: 10px 12px; font-size: 13.5px; outline: none; appearance: none; cursor: pointer; }
+  #filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+  #filters select { flex: 1 1 23%; min-width: 130px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.14); color: #aeb8cc; border-radius: 10px; padding: 10px 12px; font-size: 13.5px; outline: none; appearance: none; cursor: pointer; }
   #filters select:focus { border-color: #4f7dff; }
   #filters select option { background: #111827; color: #e8ecf4; }
   #fClear { flex-shrink: 0; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.14); color: #aeb8cc; border-radius: 10px; padding: 0 14px; font-size: 14px; cursor: pointer; display: none; }
   #fClear:hover { background: rgba(255,255,255,.12); }
   @media (max-width: 600px) {
-    #filters { flex-wrap: wrap; }
     #filters select { flex-basis: 100%; }
   }
   #list { display: flex; flex-direction: column; gap: 8px; }
@@ -147,11 +146,7 @@ export function renderPlayerPage(passwordProtected: boolean): string {
     <div class="count" id="count">Loading…</div>
   </header>
   <input id="search" type="text" placeholder="🔍  Search songs…" autocomplete="off">
-  <div id="filters">
-    <select id="fArtist" title="Filter by artist"><option value="">All artists</option></select>
-    <select id="fType" title="Filter by type"><option value="">All types</option><option value="audio">🎵 Audio</option><option value="video">🎬 Video</option></select>
-    <button id="fClear" title="Clear filters">✕</button>
-  </div>
+  <div id="filters"></div>
   <div id="plTag" class="pltag" style="display:none"></div>
   <div id="list"></div>
 </div>
@@ -233,8 +228,7 @@ export function renderPlayerPage(passwordProtected: boolean): string {
   let songs = [];
   let filtered = [];
   let current = -1;
-  let fArtist = "";
-  let fType = "";
+  let active = {};
   let playing = false;
   let needsAuth = ${passwordProtected ? "true" : "false"};
   let authToken = sessionStorage.getItem(PASS_KEY) || "";
@@ -343,17 +337,100 @@ export function renderPlayerPage(passwordProtected: boolean): string {
     if (s.title) return s.artist ? s.artist + " - " + s.title : s.title;
     return s.file_name || "Song #" + s.id;
   }
+  const META_FILTERS = [
+    { key: "artist", label: "Artist" },
+    { key: "album", label: "Album" },
+    { key: "genre", label: "Genre" },
+    { key: "language", label: "Language" },
+    { key: "codec", label: "Codec" },
+    { key: "year", label: "Year" },
+  ];
+  function durBucket(s) {
+    const d = s.duration || 0;
+    if (!d) return "";
+    if (d < 180) return "Under 3 min";
+    if (d < 300) return "3–5 min";
+    if (d < 600) return "5–10 min";
+    return "Over 10 min";
+  }
+  function sizeBucket(s) {
+    const b = s.size || 0;
+    if (!b) return "";
+    if (b < 10 * 1048576) return "Under 10 MB";
+    if (b < 25 * 1048576) return "10–25 MB";
+    if (b < 50 * 1048576) return "25–50 MB";
+    return "Over 50 MB";
+  }
+  function buildFilters() {
+    const box = $("filters");
+    box.innerHTML = "";
+    const sets = {};
+    songs.forEach(s => {
+      for (const f of META_FILTERS) {
+        const v = String(s[f.key] || "").trim();
+        if (!v) continue;
+        (sets[f.key] = sets[f.key] || new Set()).add(v);
+      }
+    });
+    META_FILTERS.forEach(f => {
+      const values = sets[f.key] ? [...sets[f.key]].sort((a, b) => a.localeCompare(b)) : [];
+      if (!values.length) return;
+      const el = document.createElement("select");
+      el.className = "fsel";
+      el.dataset.key = f.key;
+      el.innerHTML = '<option value="">All ' + f.label + "</option>" + values.map(v => '<option value="' + esc(v) + '">' + esc(v) + "</option>").join("");
+      el.value = active[f.key] && values.includes(active[f.key]) ? active[f.key] : "";
+      el.addEventListener("change", () => {
+        const k = el.dataset.key;
+        if (el.value) active[k] = el.value; else delete active[k];
+        render();
+      });
+      box.appendChild(el);
+    });
+    const statics = [
+      { key: "type", label: "Type", opts: [["audio", "🎵 Audio"], ["video", "🎬 Video"]] },
+      { key: "dur", label: "Duration", opts: [["Under 3 min", "Under 3 min"], ["3–5 min", "3–5 min"], ["5–10 min", "5–10 min"], ["Over 10 min", "Over 10 min"]] },
+      { key: "size", label: "Size", opts: [["Under 10 MB", "Under 10 MB"], ["10–25 MB", "10–25 MB"], ["25–50 MB", "25–50 MB"], ["Over 50 MB", "Over 50 MB"]] },
+    ];
+    statics.forEach(f => {
+      const el = document.createElement("select");
+      el.className = "fsel";
+      el.dataset.key = f.key;
+      el.innerHTML = '<option value="">All ' + f.label + "</option>" + f.opts.map(o => '<option value="' + o[0] + '">' + o[1] + "</option>").join("");
+      el.value = active[f.key] || "";
+      el.addEventListener("change", () => {
+        const k = el.dataset.key;
+        if (el.value) active[k] = el.value; else delete active[k];
+        render();
+      });
+      box.appendChild(el);
+    });
+    const clr = document.createElement("button");
+    clr.id = "fClear";
+    clr.title = "Clear filters";
+    clr.textContent = "✕";
+    clr.style.display = Object.keys(active).length ? "inline-block" : "none";
+    clr.addEventListener("click", () => { active = {}; buildFilters(); render(); });
+    box.appendChild(clr);
+  }
   function render() {
     const q = searchEl.value.trim().toLowerCase();
-    filtered = songs.filter(s =>
-      (!q || (s.file_name||"").toLowerCase().includes(q)
-        || (s.title||"").toLowerCase().includes(q)
-        || (s.artist||"").toLowerCase().includes(q))
-      && (!fArtist || (s.artist||"") === fArtist)
-      && (!fType || typeOf(s) === fType));
-    const busy = (q || fArtist || fType) ? " / " + songs.length : "";
+    const activeKeys = Object.keys(active);
+    filtered = songs.filter(s => {
+      if (q && !((s.file_name || "").toLowerCase().includes(q)
+          || (s.title || "").toLowerCase().includes(q)
+          || (s.artist || "").toLowerCase().includes(q))) return false;
+      for (const f of META_FILTERS) {
+        const v = active[f.key];
+        if (v && String(s[f.key] || "") !== v) return false;
+      }
+      if (active.type && typeOf(s) !== active.type) return false;
+      if (active.dur && durBucket(s) !== active.dur) return false;
+      if (active.size && sizeBucket(s) !== active.size) return false;
+      return true;
+    });
+    const busy = (q || activeKeys.length) ? " / " + songs.length : "";
     $("count").textContent = filtered.length + busy + " song" + (filtered.length === 1 ? "" : "s");
-    $("fClear").style.display = (fArtist || fType) ? "inline-block" : "none";
     renderPlTag();
     if (!filtered.length) {
       listEl.innerHTML = '<div class="empty"><div class="big">🎧</div>' + (songs.length ? "No matches found" : "Library is empty — send a song to the bot on Telegram") + "</div>";
@@ -589,11 +666,7 @@ export function renderPlayerPage(passwordProtected: boolean): string {
       return r.json();
     }).then(data => {
       songs = data || [];
-      const artists = [...new Set(songs.map(s => (s.artist || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-      const sel = $("fArtist");
-      sel.innerHTML = '<option value="">All artists (' + artists.length + ')</option>' + artists.map(a => '<option value="' + esc(a) + '">' + esc(a) + "</option>").join("");
-      if (fArtist && !artists.includes(fArtist)) fArtist = "";
-      sel.value = fArtist;
+      buildFilters();
       current = -1;
       render();
       const hash = location.hash.match(/#\\/song\\/(\\d+)/);
@@ -619,9 +692,6 @@ export function renderPlayerPage(passwordProtected: boolean): string {
   $("passInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("passBtn").click(); });
 
   const dropZone = $("dropZone"), fileInput = $("fileInput"), uplist = $("uplist");
-  $("fArtist").addEventListener("change", (e) => { fArtist = e.target.value; render(); });
-  $("fType").addEventListener("change", (e) => { fType = e.target.value; render(); });
-  $("fClear").addEventListener("click", () => { fArtist = ""; fType = ""; $("fArtist").value = ""; $("fType").value = ""; render(); });
   function openUpload() {
     if (needsAuth && !authToken) { toast("Unlock the player first"); return; }
     $("uploadOverlay").classList.add("show");

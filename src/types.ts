@@ -28,6 +28,14 @@ export interface Song {
   height: number | null;
   added_at: number;
   added_by: number | null;
+  album?: string | null;
+  genre?: string | null;
+  year?: string | null;
+  codec?: string | null;
+  sample_rate?: number | null;
+  channels?: number | null;
+  bitrate?: number | null;
+  language?: string | null;
 }
 
 export const TG_API = "https://api.telegram.org";

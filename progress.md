@@ -95,6 +95,14 @@ schedule — no manual steps.
      `content-range: bytes 41943040-45431410/45431411`, deployed UI contains
      the chunked downloader.
 
+7. **Filters by all metadata (web + mobile).** The D1 schema now stores the
+   scanner's full metadata (`album, genre, year, codec, sample_rate, channels,
+   bitrate, language` — migration `0004`), `/api/import` upserts it and
+   `/api/songs` serves it. The UI builds a **dynamic filter bar** (Artist,
+   Album, Genre, Language, Codec, Year + Type/Duration/Size buckets)
+   populated from the live library; stacked full-width on mobile, wrapped row
+   on desktop. Existing library backfilled (2,663 songs upserted in chunks).
+
 ---
 
 ## Validation evidence (from /opt/tele-music-scanner/scan.log)

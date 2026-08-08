@@ -355,8 +355,9 @@ export default {
       for (const s of body.songs ?? []) {
         await env.DB.prepare(
           `INSERT INTO songs (tg_file_id, tg_unique_id, chat_id, message_id, file_name, title, artist,
-            mime_type, media_type, size, duration, width, height, added_at, added_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            mime_type, media_type, size, duration, width, height, added_at, added_by,
+            album, genre, year, codec, sample_rate, channels, bitrate, language)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(chat_id, message_id) DO UPDATE SET
              tg_file_id = excluded.tg_file_id,
              file_name = excluded.file_name,
@@ -367,10 +368,20 @@ export default {
              size = excluded.size,
              duration = excluded.duration,
              width = excluded.width,
-             height = excluded.height`,
+             height = excluded.height,
+             album = excluded.album,
+             genre = excluded.genre,
+             year = excluded.year,
+             codec = excluded.codec,
+             sample_rate = excluded.sample_rate,
+             channels = excluded.channels,
+             bitrate = excluded.bitrate,
+             language = excluded.language`,
         )
-          .bind(s.tg_file_id, s.tg_unique_id, s.chat_id, s.message_id, s.file_name, s.title, s.artist,
-            s.mime_type, s.media_type, s.size, s.duration, s.width, s.height, s.added_at, s.added_by)
+          .bind(s.tg_file_id, s.tg_unique_id ?? null, s.chat_id, s.message_id, s.file_name, s.title, s.artist,
+            s.mime_type, s.media_type, s.size, s.duration, s.width, s.height, s.added_at, s.added_by ?? null,
+            s.album ?? null, s.genre ?? null, s.year ?? null, s.codec ?? null,
+            s.sample_rate ?? null, s.channels ?? null, s.bitrate ?? null, s.language ?? null)
           .run();
         inserted++;
       }
@@ -456,5 +467,13 @@ function pub(s: Song) {
     chat_id: s.chat_id,
     message_id: s.message_id,
     added_at: s.added_at,
+    album: s.album,
+    genre: s.genre,
+    year: s.year,
+    codec: s.codec,
+    sample_rate: s.sample_rate,
+    channels: s.channels,
+    bitrate: s.bitrate,
+    language: s.language,
   };
 }
