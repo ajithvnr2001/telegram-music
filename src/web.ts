@@ -26,6 +26,16 @@ export function renderPlayerPage(passwordProtected: boolean): string {
   #search { width: 100%; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.14); color: #e8ecf4; border-radius: 12px; padding: 13px 18px; font-size: 15px; outline: none; margin-bottom: 20px; transition: border .2s; }
   #search:focus { border-color: #4f7dff; }
   #search::placeholder { color: #5d6880; }
+  #filters { display: flex; gap: 8px; margin-bottom: 20px; }
+  #filters select { flex: 1; min-width: 0; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.14); color: #aeb8cc; border-radius: 10px; padding: 10px 12px; font-size: 13.5px; outline: none; appearance: none; cursor: pointer; }
+  #filters select:focus { border-color: #4f7dff; }
+  #filters select option { background: #111827; color: #e8ecf4; }
+  #fClear { flex-shrink: 0; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.14); color: #aeb8cc; border-radius: 10px; padding: 0 14px; font-size: 14px; cursor: pointer; display: none; }
+  #fClear:hover { background: rgba(255,255,255,.12); }
+  @media (max-width: 600px) {
+    #filters { flex-wrap: wrap; }
+    #filters select { flex-basis: 100%; }
+  }
   #list { display: flex; flex-direction: column; gap: 8px; }
   .row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: rgba(255,255,255,.045); border: 1px solid rgba(255,255,255,.08); border-radius: 12px; cursor: pointer; transition: background .15s, transform .15s; }
   .row:hover { background: rgba(255,255,255,.09); }
@@ -137,6 +147,11 @@ export function renderPlayerPage(passwordProtected: boolean): string {
     <div class="count" id="count">Loading…</div>
   </header>
   <input id="search" type="text" placeholder="🔍  Search songs…" autocomplete="off">
+  <div id="filters">
+    <select id="fArtist" title="Filter by artist"><option value="">All artists</option></select>
+    <select id="fType" title="Filter by type"><option value="">All types</option><option value="audio">🎵 Audio</option><option value="video">🎬 Video</option></select>
+    <button id="fClear" title="Clear filters">✕</button>
+  </div>
   <div id="plTag" class="pltag" style="display:none"></div>
   <div id="list"></div>
 </div>
@@ -218,6 +233,8 @@ export function renderPlayerPage(passwordProtected: boolean): string {
   let songs = [];
   let filtered = [];
   let current = -1;
+  let fArtist = "";
+  let fType = "";
   let playing = false;
   let needsAuth = ${passwordProtected ? "true" : "false"};
   let authToken = sessionStorage.getItem(PASS_KEY) || "";
@@ -328,10 +345,15 @@ export function renderPlayerPage(passwordProtected: boolean): string {
   }
   function render() {
     const q = searchEl.value.trim().toLowerCase();
-    filtered = q ? songs.filter(s => (s.file_name||"").toLowerCase().includes(q)
+    filtered = songs.filter(s =>
+      (!q || (s.file_name||"").toLowerCase().includes(q)
         || (s.title||"").toLowerCase().includes(q)
-        || (s.artist||"").toLowerCase().includes(q)) : songs;
-    $("count").textContent = filtered.length + (q ? " / " + songs.length : "") + " song" + (filtered.length === 1 ? "" : "s");
+        || (s.artist||"").toLowerCase().includes(q))
+      && (!fArtist || (s.artist||"") === fArtist)
+      && (!fType || typeOf(s) === fType));
+    const busy = (q || fArtist || fType) ? " / " + songs.length : "";
+    $("count").textContent = filtered.length + busy + " song" + (filtered.length === 1 ? "" : "s");
+    $("fClear").style.display = (fArtist || fType) ? "inline-block" : "none";
     renderPlTag();
     if (!filtered.length) {
       listEl.innerHTML = '<div class="empty"><div class="big">🎧</div>' + (songs.length ? "No matches found" : "Library is empty — send a song to the bot on Telegram") + "</div>";
@@ -567,6 +589,11 @@ export function renderPlayerPage(passwordProtected: boolean): string {
       return r.json();
     }).then(data => {
       songs = data || [];
+      const artists = [...new Set(songs.map(s => (s.artist || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+      const sel = $("fArtist");
+      sel.innerHTML = '<option value="">All artists (' + artists.length + ')</option>' + artists.map(a => '<option value="' + esc(a) + '">' + esc(a) + "</option>").join("");
+      if (fArtist && !artists.includes(fArtist)) fArtist = "";
+      sel.value = fArtist;
       current = -1;
       render();
       const hash = location.hash.match(/#\\/song\\/(\\d+)/);
@@ -592,6 +619,9 @@ export function renderPlayerPage(passwordProtected: boolean): string {
   $("passInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("passBtn").click(); });
 
   const dropZone = $("dropZone"), fileInput = $("fileInput"), uplist = $("uplist");
+  $("fArtist").addEventListener("change", (e) => { fArtist = e.target.value; render(); });
+  $("fType").addEventListener("change", (e) => { fType = e.target.value; render(); });
+  $("fClear").addEventListener("click", () => { fArtist = ""; fType = ""; $("fArtist").value = ""; $("fType").value = ""; render(); });
   function openUpload() {
     if (needsAuth && !authToken) { toast("Unlock the player first"); return; }
     $("uploadOverlay").classList.add("show");
